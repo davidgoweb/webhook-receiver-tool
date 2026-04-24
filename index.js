@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * webhook-pipe — stateless webhook inspection tool
+ * webhook-receiver-tool — stateless webhook inspection tool
  *
  * Architecture:
  *   Each viewer owns a private AsyncQueue. The subscriber registry maps

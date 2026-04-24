@@ -1,4 +1,4 @@
-# webhook-pipe
+# webhook-receiver-tool
 
 A stateless, zero-persistence webhook inspection tool.  
 Receive webhook POSTs on any path and watch them appear in real-time via Server-Sent Events — no database, no disk writes, no files.
