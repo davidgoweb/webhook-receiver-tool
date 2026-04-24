@@ -146,6 +146,57 @@
     .btn:hover  { opacity: .88; }
     .btn.active { background: var(--danger); }
 
+    /* Password input */
+    .password-row {
+      display: none;
+      margin-top: 10px;
+    }
+    .password-row.visible {
+      display: block;
+    }
+    .password-input {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 10px;
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 12px;
+      outline: none;
+    }
+    .password-input:focus {
+      border-color: var(--border-hi);
+    }
+    .password-buttons {
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .btn-small {
+      flex: 1;
+      padding: 6px;
+      font-size: 11px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-family: var(--mono);
+    }
+    .btn-small:hover { opacity: .88; }
+    .btn-small.secondary { background: var(--border); color: var(--text); }
+    .btn-small.secondary:hover { opacity: .7; }
+
+    /* Set password button */
+    .set-password-row {
+      display: none;
+      margin-top: 10px;
+    }
+    .set-password-row.visible {
+      display: block;
+    }
+
     /* Payload list */
     .event-list {
       flex: 1;
@@ -367,6 +418,21 @@
         <input id="path-input" type="text" placeholder="my-hook" value="my-hook" spellcheck="false">
       </div>
       <button class="btn" id="connect-btn" onclick="toggleConnect()">Connect</button>
+
+      <!-- Password prompt (shown when 401) -->
+      <div class="password-row" id="password-row">
+        <div class="sidebar-label" style="margin-top:12px">Password Required</div>
+        <input type="password" class="password-input" id="password-input" placeholder="Enter password..." onkeydown="if(event.key==='Enter')submitPassword()">
+        <div class="password-buttons">
+          <button class="btn-small" onclick="submitPassword()">Submit</button>
+          <button class="btn-small secondary" onclick="cancelPassword()">Cancel</button>
+        </div>
+      </div>
+
+      <!-- Set password (shown for active session) -->
+      <div class="set-password-row" id="set-password-row">
+        <button class="btn" style="background:var(--border);color:var(--text)" onclick="showSetPassword()">Set Password</button>
+      </div>
     </div>
 
     <div class="sidebar-section" style="padding-bottom:6px;">
@@ -410,6 +476,8 @@
   let activeIdx = null;
   let activeTab = 'body';
   let total = 0;
+  let currentPassword = null; // Store password for current connection
+  let sessionHasPassword = false; // Track if current session has password
 
   // Get BASE_URL from injected config (empty string if not set)
   const BASE_URL = window.CONFIG?.BASE_URL || '';
@@ -418,7 +486,7 @@
     if (es) { disconnect(); } else { connect(); }
   }
 
-  function connect() {
+  async function connect(withPassword = null) {
     const path = document.getElementById('path-input').value.trim();
     if (!path) return;
 
@@ -427,11 +495,39 @@
     document.getElementById('connect-btn').classList.add('active');
     document.getElementById('path-input').disabled = true;
 
+    // Store password for potential use in setPassword
+    if (withPassword) {
+      currentPassword = withPassword;
+    }
+
+    // Build URL with password if provided
+    let url = `${BASE_URL}/webhook/${encodeURIComponent(path)}?action=view`;
+    if (currentPassword) {
+      url += `&password=${encodeURIComponent(currentPassword)}`;
+    }
+
+    // First check if connection succeeds (to catch 401)
+    try {
+      const testResponse = await fetch(url, { method: 'GET' });
+      if (testResponse.status === 401) {
+        const data = await testResponse.json();
+        if (data.passwordRequired) {
+          disconnect();
+          showPasswordPrompt();
+          return;
+        }
+      }
+    } catch (e) {
+      // Fetch might fail for SSE, continue to EventSource
+    }
+
     // EventSource — background request, does NOT affect tab favicon/loading state
-    es = new EventSource(`${BASE_URL}/webhook/${encodeURIComponent(path)}?action=view`);
+    es = new EventSource(url);
 
     es.addEventListener('connected', e => {
       const d = JSON.parse(e.data);
+      sessionHasPassword = d.hasPassword || false;
+      updatePasswordButton();
       setStatus('live', `live · ${d.viewers} viewer${d.viewers !== 1 ? 's' : ''}`);
     });
 
@@ -454,7 +550,16 @@
       if (activeIdx === null) selectEvent(0);
     });
 
-    es.onerror = () => {
+    es.onerror = async () => {
+      // Check if it's a 401 error
+      try {
+        const testResponse = await fetch(url, { method: 'GET' });
+        if (testResponse.status === 401) {
+          disconnect();
+          showPasswordPrompt();
+          return;
+        }
+      } catch (e) {}
       setStatus('err', 'connection lost — retrying…');
     };
   }
@@ -465,6 +570,70 @@
     document.getElementById('connect-btn').textContent = 'Connect';
     document.getElementById('connect-btn').classList.remove('active');
     document.getElementById('path-input').disabled = false;
+    document.getElementById('password-row').classList.remove('visible');
+    document.getElementById('set-password-row').classList.remove('visible');
+    currentPassword = null;
+    sessionHasPassword = false;
+  }
+
+  function showPasswordPrompt() {
+    document.getElementById('password-row').classList.add('visible');
+    document.getElementById('password-input').focus();
+  }
+
+  function cancelPassword() {
+    document.getElementById('password-row').classList.remove('visible');
+    document.getElementById('password-input').value = '';
+    // Reset UI state since we cancelled the connection attempt
+    document.getElementById('connect-btn').textContent = 'Connect';
+    document.getElementById('connect-btn').classList.remove('active');
+    document.getElementById('path-input').disabled = false;
+    setStatus('', 'disconnected');
+  }
+
+  function submitPassword() {
+    const password = document.getElementById('password-input').value.trim();
+    if (!password) return;
+    document.getElementById('password-row').classList.remove('visible');
+    document.getElementById('password-input').value = '';
+    connect(password);
+  }
+
+  function updatePasswordButton() {
+    // Show "Set Password" button only when connected and session doesn't have password
+    if (es && !sessionHasPassword) {
+      document.getElementById('set-password-row').classList.add('visible');
+    } else {
+      document.getElementById('set-password-row').classList.remove('visible');
+    }
+  }
+
+  function showSetPassword() {
+    const password = prompt('Set a password for this session:');
+    if (!password) return;
+
+    const path = document.getElementById('path-input').value.trim();
+    if (!path) return;
+
+    fetch(`${BASE_URL}/webhook/${encodeURIComponent(path)}?action=set-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password })
+    })
+    .then(res => res.json())
+    .then(data => {
+      if (data.status === 'success') {
+        sessionHasPassword = true;
+        currentPassword = password;
+        updatePasswordButton();
+        alert('Password set successfully!');
+      } else {
+        alert('Error: ' + data.message);
+      }
+    })
+    .catch(err => {
+      alert('Failed to set password: ' + err.message);
+    });
   }
 
   function setStatus(state, label) {

@@ -144,6 +144,8 @@ curl -X POST http://localhost:3088/webhook/payments -d '{"amount":99}'
 | Cross-path data leak | Per-path `Map<id, AsyncQueue>` — dispatch is path-scoped |
 | Sensitive header exposure | Allowlist applied before emit; `Authorization`, `Cookie`, bearer tokens are stripped |
 | Unbounded SSE connections | `MAX_VIEWERS_PER_PATH` cap; excess connections receive HTTP 503 |
+| Idle connection abuse | 5-hour idle timeout; inactive viewers are automatically removed |
+| Queue memory bloat | Per-viewer queue limit of 500 messages; oldest dropped when full |
 | Rate abuse | `@fastify/rate-limit` per IP; configurable via env |
 | Large body DoS | `bodyLimit` enforced at Fastify level (default 64 KB) |
 | Privilege escalation | Docker image runs as non-root `webhook` user |
@@ -171,6 +173,8 @@ All SSE events use named event types.
 | `RATE_LIMIT_WINDOW` | `1 minute` | Rate limit time window |
 | `MAX_VIEWERS_PER_PATH` | `50` | Max concurrent SSE viewers per path |
 | `BODY_LIMIT_BYTES` | `65536` | Max incoming body size (bytes) |
+| `IDLE_TIMEOUT_MS` | `18000000` | Idle timeout in milliseconds (default: 5 hours). Inactive viewers are removed. |
+| `QUEUE_SIZE_LIMIT` | `500` | Max messages per viewer queue. Oldest messages dropped when full. |
 
 See `.env.example` for a full reference.
 

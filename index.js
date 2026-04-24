@@ -35,11 +35,13 @@ const nodePath         = require('path');
 // Configuration (all overridable via environment variables)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const PORT               = 3088;
-const BASE_URL           = process.env.BASE_URL                || '';
-const MAX_VIEWERS_PATH   = parseInt(process.env.MAX_VIEWERS_PER_PATH || '50',  10);
-const RATE_LIMIT_MAX     = parseInt(process.env.RATE_LIMIT_MAX       || '100', 10);
-const RATE_LIMIT_WINDOW  = process.env.RATE_LIMIT_WINDOW             || '1 minute';
+const PORT                = 3088;
+const BASE_URL            = process.env.BASE_URL                || '';
+const MAX_VIEWERS_PATH    = parseInt(process.env.MAX_VIEWERS_PER_PATH || '50',  10);
+const RATE_LIMIT_MAX      = parseInt(process.env.RATE_LIMIT_MAX       || '100', 10);
+const RATE_LIMIT_WINDOW   = process.env.RATE_LIMIT_WINDOW             || '1 minute';
+const IDLE_TIMEOUT        = parseInt(process.env.IDLE_TIMEOUT_MS        || '18000000', 10); // 5 hours default
+const QUEUE_SIZE_LIMIT    = parseInt(process.env.QUEUE_SIZE_LIMIT      || '500', 10);
 
 // Only forward these headers from incoming webhooks to viewers.
 // Never forward Authorization, Cookie, Set-Cookie, or any bearer tokens.
@@ -67,21 +69,33 @@ const VALID_PATH_RE = /^[a-zA-Z0-9\-_/]{1,128}$/;
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * A simple single-consumer async queue.
+ * A simple single-consumer async queue with size limit.
  *
  * push(item) delivers immediately if a consumer is waiting, otherwise
  *            enqueues. After close(), push() is a no-op and next() returns null.
+ *            Drops oldest messages when queue exceeds maxSize.
  */
 class AsyncQueue {
   #buffer  = [];
   #waiters = [];
   #closed  = false;
+  #maxSize;
+  #dropped = 0;   // Count of dropped messages
+
+  constructor(maxSize = QUEUE_SIZE_LIMIT) {
+    this.#maxSize = maxSize;
+  }
 
   push(item) {
     if (this.#closed) return;
     if (this.#waiters.length > 0) {
       this.#waiters.shift()(item);
     } else {
+      // Drop oldest message if queue is full
+      if (this.#buffer.length >= this.#maxSize) {
+        this.#buffer.shift();
+        this.#dropped++;
+      }
       this.#buffer.push(item);
     }
   }
@@ -102,49 +116,134 @@ class AsyncQueue {
   }
 
   get isClosed() { return this.#closed; }
+  get dropped() { return this.#dropped; }
+  get size() { return this.#buffer.length; }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Subscriber registry
+// Subscriber registry with password protection and idle timeout
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** @type {Map<string, Map<string, AsyncQueue>>} */
+/** @type {Map<string, {passwordHash: string | null, viewers: Map<string, {queue: AsyncQueue, lastActivity: number}>}>} */
 const subscribers = new Map();
 
-function addSubscriber(path, id, queue) {
-  if (!subscribers.has(path)) subscribers.set(path, new Map());
-  subscribers.get(path).set(id, queue);
+/**
+ * Simple hash for password comparison (SHA-256).
+ * Not for production security, but sufficient for casual session protection.
+ */
+async function hashPassword(password) {
+  const crypto = require('crypto');
+  return crypto.createHash('sha256').update(password).digest('hex');
+}
+
+function addSubscriber(path, id, queue, passwordHash = null) {
+  if (!subscribers.has(path)) {
+    subscribers.set(path, { passwordHash, viewers: new Map() });
+  }
+  subscribers.get(path).viewers.set(id, { queue, lastActivity: Date.now() });
+}
+
+/**
+ * Set password for an existing path (called by first viewer when they set one).
+ * Returns true if set, false if path doesn't exist or already has a password.
+ */
+function setPassword(path, passwordHash) {
+  const pathData = subscribers.get(path);
+  if (!pathData) return false;
+  if (pathData.passwordHash) return false; // already password protected
+  pathData.passwordHash = passwordHash;
+  return true;
 }
 
 function removeSubscriber(path, id) {
-  const viewers = subscribers.get(path);
-  if (!viewers) return;
-  viewers.get(id)?.close();
-  viewers.delete(id);
-  if (viewers.size === 0) subscribers.delete(path);
+  const pathData = subscribers.get(path);
+  if (!pathData) return;
+  pathData.viewers.get(id)?.queue.close();
+  pathData.viewers.delete(id);
+  if (pathData.viewers.size === 0) subscribers.delete(path);
 }
 
 /**
  * Push a payload to every viewer watching `path`.
  * Cost: O(viewers on this path) — not O(all viewers).
+ * Updates activity timestamp and removes idle viewers.
  * @returns {number} number of viewers that received the payload
  */
 function dispatch(path, payload) {
-  const viewers = subscribers.get(path);
-  if (!viewers || viewers.size === 0) return 0;
-  for (const queue of viewers.values()) queue.push(payload);
-  return viewers.size;
+  const pathData = subscribers.get(path);
+  if (!pathData || pathData.viewers.size === 0) return 0;
+
+  const now = Date.now();
+  const toRemove = [];
+
+  for (const [id, viewer] of pathData.viewers) {
+    // Check for idle timeout
+    if (now - viewer.lastActivity > IDLE_TIMEOUT) {
+      toRemove.push(id);
+      viewer.queue.close();
+      continue;
+    }
+    viewer.queue.push(payload);
+    viewer.lastActivity = now; // Update activity on successful push
+  }
+
+  // Remove idle viewers
+  for (const id of toRemove) {
+    pathData.viewers.delete(id);
+    fastify.log.warn({ path, viewerId: id }, 'Removed idle viewer');
+  }
+
+  // Clean up path if no viewers left
+  if (pathData.viewers.size === 0) {
+    subscribers.delete(path);
+    return 0;
+  }
+
+  return pathData.viewers.size;
 }
 
 function viewerCount(path) {
-  return subscribers.get(path)?.size ?? 0;
+  return subscribers.get(path)?.viewers.size ?? 0;
 }
 
 function totalViewers() {
   let n = 0;
-  for (const m of subscribers.values()) n += m.size;
+  for (const pathData of subscribers.values()) n += pathData.viewers.size;
   return n;
 }
+
+/**
+ * Periodic cleanup of idle viewers.
+ * Runs every minute to check and remove inactive connections.
+ */
+function cleanupIdleViewers() {
+  const now = Date.now();
+  let removed = 0;
+
+  for (const [path, pathData] of subscribers) {
+    const toRemove = [];
+    for (const [id, viewer] of pathData.viewers) {
+      if (now - viewer.lastActivity > IDLE_TIMEOUT) {
+        toRemove.push(id);
+        viewer.queue.close();
+      }
+    }
+    for (const id of toRemove) {
+      pathData.viewers.delete(id);
+      removed++;
+    }
+    if (pathData.viewers.size === 0) {
+      subscribers.delete(path);
+    }
+  }
+
+  if (removed > 0) {
+    fastify.log.info({ removed }, 'Cleaned up idle viewers');
+  }
+}
+
+// Run cleanup every minute
+setInterval(cleanupIdleViewers, 60 * 1000);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Header sanitisation
@@ -235,10 +334,71 @@ fastify.get('/health', async () => ({
 fastify.all('/webhook/*', async (request, reply) => {
   const path = request.params['*'];
 
+  // ── SET PASSWORD mode ───────────────────────────────────────────────────────
+  //   POST /webhook/<path>?action=set-password
+  //   First viewer can optionally set a password for the session
+  // ─────────────────────────────────────────────────────────────────────────
+  if (request.method === 'POST' && request.query.action === 'set-password') {
+    const { password } = request.body || {};
+
+    if (!password || typeof password !== 'string' || password.length < 1) {
+      return reply.code(400).send({
+        status: 'error',
+        message: 'Password is required and must be a non-empty string.',
+      });
+    }
+
+    const pathData = subscribers.get(path);
+    if (!pathData) {
+      return reply.code(404).send({
+        status: 'error',
+        message: 'Path not found. Connect to view the stream first.',
+      });
+    }
+
+    if (pathData.passwordHash) {
+      return reply.code(409).send({
+        status: 'error',
+        message: 'Password already set for this session.',
+      });
+    }
+
+    const passwordHash = await hashPassword(password);
+    pathData.passwordHash = passwordHash;
+
+    return {
+      status: 'success',
+      message: 'Password set successfully.',
+    };
+  }
+
   // ── VIEW mode ─────────────────────────────────────────────────────────────
   //   GET /webhook/<path>?action=view
   // ─────────────────────────────────────────────────────────────────────────
   if (request.method === 'GET' && request.query.action === 'view') {
+
+    const pathData = subscribers.get(path);
+    const needsPassword = pathData?.passwordHash;
+    const providedPassword = request.query.password || null;
+
+    // Password check: if path has password, require it
+    if (needsPassword) {
+      if (!providedPassword) {
+        return reply.code(401).send({
+          status: 'error',
+          message: 'Password required',
+          passwordRequired: true,
+        });
+      }
+      const providedHash = await hashPassword(providedPassword);
+      if (providedHash !== pathData.passwordHash) {
+        return reply.code(401).send({
+          status: 'error',
+          message: 'Invalid password',
+          passwordRequired: true,
+        });
+      }
+    }
 
     // Enforce per-path connection cap before allocating anything
     if (viewerCount(path) >= MAX_VIEWERS_PATH) {
@@ -249,7 +409,7 @@ fastify.all('/webhook/*', async (request, reply) => {
     }
 
     const viewerId = randomUUID();
-    const queue    = new AsyncQueue();
+    const queue    = new AsyncQueue(QUEUE_SIZE_LIMIT);
 
     addSubscriber(path, viewerId, queue);
 
@@ -269,6 +429,7 @@ fastify.all('/webhook/*', async (request, reply) => {
           path,
           viewers: viewerCount(path),
           maxViewers: MAX_VIEWERS_PATH,
+          hasPassword: !!needsPassword,
         }),
       };
 
@@ -341,8 +502,8 @@ fastify.setNotFoundHandler((_req, reply) => {
 
 async function shutdown(signal) {
   fastify.log.info(`${signal} received — draining ${totalViewers()} viewer queue(s)`);
-  for (const [path, viewers] of subscribers) {
-    for (const [id] of viewers) removeSubscriber(path, id);
+  for (const [path, pathData] of subscribers) {
+    for (const [id] of pathData.viewers) removeSubscriber(path, id);
   }
   await fastify.close();
   process.exit(0);

@@ -22,12 +22,16 @@ EXPOSE 3088
 # RATE_LIMIT_MAX       Max requests per IP per RATE_LIMIT_WINDOW   (default: 100)
 # RATE_LIMIT_WINDOW    Rate-limit window string                     (default: 1 minute)
 # MAX_VIEWERS_PER_PATH Max concurrent SSE viewers per path         (default: 50)
+# IDLE_TIMEOUT_MS      Idle timeout in milliseconds                (default: 18000000, 5 hours)
+# QUEUE_SIZE_LIMIT     Max messages per viewer queue               (default: 500)
 # BODY_LIMIT_BYTES     Max incoming request body size in bytes      (default: 65536)
 
 ENV BASE_URL="" \
     RATE_LIMIT_MAX=100 \
     RATE_LIMIT_WINDOW="1 minute" \
     MAX_VIEWERS_PER_PATH=50 \
+    IDLE_TIMEOUT_MS=18000000 \
+    QUEUE_SIZE_LIMIT=500 \
     BODY_LIMIT_BYTES=65536
 
 # Docker-native health check — hits the /health endpoint every 30 s
