@@ -1,0 +1,19 @@
+{
+  "name": "webhook-pipe",
+  "version": "2.0.0",
+  "description": "Stateless webhook inspection tool — per-path SSE fan-out, no database, no disk I/O.",
+  "main": "index.js",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "dev":   "node --watch index.js"
+  },
+  "dependencies": {
+    "@fastify/rate-limit": "^9.1.0",
+    "@fastify/static":     "^7.0.4",
+    "fastify":             "^4.26.0",
+    "fastify-sse-v2":      "^3.1.2"
+  }
+}

@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>webhook-pipe</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0d0f12;
+      --surface:   #141720;
+      --border:    #1f2433;
+      --border-hi: #2e3650;
+      --accent:    #4f7cff;
+      --accent-dim:#1e2d60;
+      --success:   #22c87a;
+      --warn:      #f0a500;
+      --danger:    #e0454a;
+      --text:      #cdd3e8;
+      --muted:     #5a6484;
+      --mono:      'IBM Plex Mono', monospace;
+      --sans:      'IBM Plex Sans', sans-serif;
+    }
+
+    html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--sans); }
+
+    /* ── Layout ─────────────────────────────────────────────────── */
+    .shell {
+      display: grid;
+      grid-template-rows: 52px 1fr;
+      grid-template-columns: 280px 1fr;
+      height: 100vh;
+    }
+
+    /* ── Top bar ────────────────────────────────────────────────── */
+    .topbar {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 0 20px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+    }
+    .topbar-brand {
+      font-family: var(--mono);
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--accent);
+      letter-spacing: .04em;
+    }
+    .topbar-brand span { color: var(--muted); }
+    .topbar-spacer { flex: 1; }
+    .status-dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--muted);
+      transition: background .3s;
+    }
+    .status-dot.live { background: var(--success); box-shadow: 0 0 6px var(--success); }
+    .status-dot.err  { background: var(--danger);  box-shadow: 0 0 6px var(--danger);  }
+    #status-label { font-size: 12px; color: var(--muted); font-family: var(--mono); }
+    .counter-pill {
+      font-family: var(--mono);
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 20px;
+      background: var(--border);
+      color: var(--muted);
+    }
+    .counter-pill b { color: var(--text); }
+
+    /* ── Sidebar ────────────────────────────────────────────────── */
+    .sidebar {
+      border-right: 1px solid var(--border);
+      background: var(--surface);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .sidebar-section {
+      padding: 14px 16px 10px;
+      border-bottom: 1px solid var(--border);
+    }
+    .sidebar-label {
+      font-size: 10px;
+      font-weight: 500;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 10px;
+    }
+
+    /* Path input row */
+    .path-row {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    .path-prefix {
+      padding: 0 8px;
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--muted);
+      white-space: nowrap;
+      border-right: 1px solid var(--border);
+      height: 34px;
+      display: flex;
+      align-items: center;
+    }
+    .path-row input {
+      flex: 1;
+      background: none;
+      border: none;
+      outline: none;
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 12px;
+      padding: 0 10px;
+      height: 34px;
+    }
+    .path-row input::placeholder { color: var(--muted); }
+
+    /* Connect button */
+    .btn {
+      width: 100%;
+      margin-top: 10px;
+      padding: 8px;
+      border: none;
+      border-radius: 6px;
+      font-family: var(--mono);
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      background: var(--accent);
+      color: #fff;
+      transition: opacity .15s, background .15s;
+    }
+    .btn:hover  { opacity: .88; }
+    .btn.active { background: var(--danger); }
+
+    /* Payload list */
+    .event-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .event-list::-webkit-scrollbar { width: 4px; }
+    .event-list::-webkit-scrollbar-track { background: transparent; }
+    .event-list::-webkit-scrollbar-thumb { background: var(--border-hi); border-radius: 4px; }
+
+    .event-item {
+      padding: 8px 10px;
+      border-radius: 5px;
+      border: 1px solid var(--border);
+      cursor: pointer;
+      transition: border-color .15s, background .15s;
+      user-select: none;
+    }
+    .event-item:hover  { border-color: var(--border-hi); background: rgba(79,124,255,.05); }
+    .event-item.active { border-color: var(--accent); background: var(--accent-dim); }
+    .event-meta {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .method-badge {
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 500;
+      padding: 1px 5px;
+      border-radius: 3px;
+      background: var(--accent-dim);
+      color: var(--accent);
+    }
+    .method-badge.post   { background: rgba(34,200,122,.12); color: var(--success); }
+    .method-badge.put    { background: rgba(240,165,0,.12);  color: var(--warn); }
+    .method-badge.patch  { background: rgba(240,165,0,.12);  color: var(--warn); }
+    .method-badge.delete { background: rgba(224,69,74,.12);  color: var(--danger); }
+    .event-time {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--muted);
+      margin-left: auto;
+    }
+    .event-id {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--muted);
+      margin-top: 3px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .empty-state {
+      padding: 24px 16px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.7;
+    }
+    .empty-state code {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--text);
+    }
+
+    /* ── Detail pane ────────────────────────────────────────────── */
+    .detail {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: var(--bg);
+    }
+    .detail-topbar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 20px;
+      height: 44px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .detail-title {
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .detail-title b { color: var(--text); }
+
+    .tab-row {
+      display: flex;
+      gap: 2px;
+      margin-left: auto;
+    }
+    .tab {
+      padding: 4px 12px;
+      font-size: 11px;
+      font-family: var(--mono);
+      border-radius: 4px;
+      cursor: pointer;
+      color: var(--muted);
+      border: 1px solid transparent;
+      transition: all .15s;
+    }
+    .tab:hover  { color: var(--text); }
+    .tab.active { color: var(--text); border-color: var(--border-hi); background: var(--surface); }
+
+    .btn-copy {
+      padding: 4px 12px;
+      font-size: 11px;
+      font-family: var(--mono);
+      border-radius: 4px;
+      cursor: pointer;
+      color: var(--muted);
+      background: none;
+      border: 1px solid var(--border);
+      transition: all .15s;
+    }
+    .btn-copy:hover { color: var(--text); border-color: var(--border-hi); }
+
+    .detail-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+    }
+    .detail-body::-webkit-scrollbar { width: 4px; }
+    .detail-body::-webkit-scrollbar-track { background: transparent; }
+    .detail-body::-webkit-scrollbar-thumb { background: var(--border-hi); border-radius: 4px; }
+
+    pre {
+      font-family: var(--mono);
+      font-size: 12.5px;
+      line-height: 1.75;
+      color: var(--text);
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    /* JSON syntax highlights */
+    .jk { color: #7ba4f5; }
+    .js { color: #66c9a0; }
+    .jn { color: #f0a500; }
+    .jb { color: #e07bff; }
+    .jp { color: var(--muted); }
+
+    /* Meta / body section blocks */
+    .section-label {
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 500;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+    .section-block {
+      border-radius: 8px;
+      padding: 16px;
+      border: 1px solid var(--border);
+    }
+    .section-meta {
+      background: rgba(79,124,255,.04);
+      border-color: var(--accent-dim);
+    }
+    .section-body {
+      background: rgba(34,200,122,.04);
+      border-color: rgba(34,200,122,.15);
+    }
+
+    .detail-placeholder {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .detail-placeholder svg { opacity: .2; }
+
+    /* Slide-in animation for new events */
+    @keyframes slide-in {
+      from { opacity: 0; transform: translateX(-6px); }
+      to   { opacity: 1; transform: translateX(0); }
+    }
+    .event-item.new { animation: slide-in .2s ease; }
+
+    /* Flash for new incoming */
+    @keyframes flash {
+      0%,100% { background: transparent; }
+      30%     { background: rgba(79,124,255,.12); }
+    }
+    .event-item.flash { animation: flash .5s ease; }
+  </style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- Top bar -->
+  <header class="topbar">
+    <span class="topbar-brand">webhook<span>-pipe</span></span>
+    <div class="status-dot" id="dot"></div>
+    <span id="status-label">disconnected</span>
+    <span class="topbar-spacer"></span>
+    <div class="counter-pill" id="counter"><b>0</b> received</div>
+  </header>
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-section">
+      <div class="sidebar-label">Endpoint</div>
+      <div class="path-row">
+        <span class="path-prefix">/webhook/</span>
+        <input id="path-input" type="text" placeholder="my-hook" value="my-hook" spellcheck="false">
+      </div>
+      <button class="btn" id="connect-btn" onclick="toggleConnect()">Connect</button>
+    </div>
+
+    <div class="sidebar-section" style="padding-bottom:6px;">
+      <div class="sidebar-label">Requests</div>
+    </div>
+
+    <div class="event-list" id="event-list">
+      <div class="empty-state" id="empty-msg">
+        Connect to a path, then send a request:<br><br>
+        <code>curl -X POST localhost:3088/webhook/my-hook \<br>-d '{"hello":"world"}'</code>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Detail pane -->
+  <main class="detail">
+    <div class="detail-topbar" id="detail-topbar" style="display:none">
+      <span class="detail-title" id="detail-meta"></span>
+      <div class="tab-row">
+        <div class="tab active" id="tab-body"   onclick="switchTab('body')">Body</div>
+        <div class="tab"        id="tab-headers" onclick="switchTab('headers')">Headers</div>
+        <div class="tab"        id="tab-raw"    onclick="switchTab('raw')">Raw</div>
+      </div>
+      <button class="btn-copy" onclick="copyActive()">Copy</button>
+    </div>
+    <div class="detail-body" id="detail-body">
+      <div class="detail-placeholder">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2">
+          <path d="M3 12h18M3 6h18M3 18h18"/>
+        </svg>
+        <span>Select a request to inspect it</span>
+      </div>
+    </div>
+  </main>
+
+</div>
+
+<script>
+  let es = null;
+  let events = [];
+  let activeIdx = null;
+  let activeTab = 'body';
+  let total = 0;
+
+  // Get BASE_URL from injected config (empty string if not set)
+  const BASE_URL = window.CONFIG?.BASE_URL || '';
+
+  function toggleConnect() {
+    if (es) { disconnect(); } else { connect(); }
+  }
+
+  function connect() {
+    const path = document.getElementById('path-input').value.trim();
+    if (!path) return;
+
+    setStatus('connecting', 'connecting…');
+    document.getElementById('connect-btn').textContent = 'Disconnect';
+    document.getElementById('connect-btn').classList.add('active');
+    document.getElementById('path-input').disabled = true;
+
+    // EventSource — background request, does NOT affect tab favicon/loading state
+    es = new EventSource(`${BASE_URL}/webhook/${encodeURIComponent(path)}?action=view`);
+
+    es.addEventListener('connected', e => {
+      const d = JSON.parse(e.data);
+      setStatus('live', `live · ${d.viewers} viewer${d.viewers !== 1 ? 's' : ''}`);
+    });
+
+    // meta and body arrive as a pair — buffer meta until body arrives
+    let pendingMeta = null;
+
+    es.addEventListener('meta', e => {
+      pendingMeta = JSON.parse(e.data);
+    });
+
+    es.addEventListener('body', e => {
+      if (!pendingMeta) return;
+      const body = JSON.parse(e.data);
+      const entry = { meta: pendingMeta, body };
+      pendingMeta = null;
+      events.unshift(entry);
+      total++;
+      updateCounter();
+      renderEventList();
+      if (activeIdx === null) selectEvent(0);
+    });
+
+    es.onerror = () => {
+      setStatus('err', 'connection lost — retrying…');
+    };
+  }
+
+  function disconnect() {
+    if (es) { es.close(); es = null; }
+    setStatus('', 'disconnected');
+    document.getElementById('connect-btn').textContent = 'Connect';
+    document.getElementById('connect-btn').classList.remove('active');
+    document.getElementById('path-input').disabled = false;
+  }
+
+  function setStatus(state, label) {
+    const dot = document.getElementById('dot');
+    dot.className = 'status-dot' + (state ? ' ' + state : '');
+    document.getElementById('status-label').textContent = label;
+  }
+
+  function updateCounter() {
+    document.getElementById('counter').innerHTML = `<b>${total}</b> received`;
+  }
+
+  function renderEventList() {
+    const list = document.getElementById('event-list');
+    document.getElementById('empty-msg')?.remove();
+
+    // Rebuild — keep it simple; lists stay small in practice
+    list.innerHTML = '';
+    events.forEach((entry, i) => {
+      const ev = entry.meta;
+      const el = document.createElement('div');
+      el.className = 'event-item' + (i === activeIdx ? ' active' : '') + (i === 0 ? ' new' : '');
+      el.onclick = () => selectEvent(i);
+      const method = (ev.method || 'GET').toLowerCase();
+      const time = new Date(ev.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      el.innerHTML = `
+        <div class="event-meta">
+          <span class="method-badge ${method}">${ev.method}</span>
+          <span style="font-family:var(--mono);font-size:11px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">/${ev.path}</span>
+          <span class="event-time">${time}</span>
+        </div>
+        <div class="event-id">${ev.id}</div>`;
+      list.appendChild(el);
+    });
+  }
+
+  function selectEvent(idx) {
+    activeIdx = idx;
+    renderEventList();
+    renderDetail();
+  }
+
+  function switchTab(tab) {
+    activeTab = tab;
+    ['body','headers','raw'].forEach(t => {
+      document.getElementById('tab-' + t).classList.toggle('active', t === tab);
+    });
+    renderDetail();
+  }
+
+  function renderDetail() {
+    if (activeIdx === null) return;
+    const { meta, body } = events[activeIdx];
+
+    document.getElementById('detail-topbar').style.display = 'flex';
+    const time = new Date(meta.timestamp).toLocaleString();
+    document.getElementById('detail-meta').innerHTML =
+      `<b>${meta.method} /${meta.path}</b> &nbsp;·&nbsp; ${time}`;
+
+    let content;
+    if (activeTab === 'body') {
+      content = `
+        <div class="section-label">Body</div>
+        <div class="section-block section-body">
+          <pre>${body != null ? syntaxHL(JSON.stringify(body, null, 2)) : '<span style="color:var(--muted)">— no body —</span>'}</pre>
+        </div>`;
+    } else if (activeTab === 'headers') {
+      content = `
+        <div class="section-label">Headers</div>
+        <div class="section-block section-meta">
+          <pre>${syntaxHL(JSON.stringify(meta.headers || {}, null, 2))}</pre>
+        </div>`;
+    } else {
+      content = `
+        <div class="section-label">Request</div>
+        <div class="section-block section-meta">
+          <pre>${syntaxHL(JSON.stringify(meta, null, 2))}</pre>
+        </div>
+        <div class="section-label" style="margin-top:20px">Body</div>
+        <div class="section-block section-body">
+          <pre>${body != null ? syntaxHL(JSON.stringify(body, null, 2)) : '<span style="color:var(--muted)">— no body —</span>'}</pre>
+        </div>`;
+    }
+
+    document.getElementById('detail-body').innerHTML = content;
+  }
+
+  function syntaxHL(json) {
+    return json
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/("(?:[^"\\]|\\.)*")(\s*:)/g, '<span class="jk">$1</span><span class="jp">$2</span>')
+      .replace(/:\s*("(?:[^"\\]|\\.)*")/g, ': <span class="js">$1</span>')
+      .replace(/:\s*(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g, ': <span class="jn">$1</span>')
+      .replace(/:\s*(true|false|null)/g, ': <span class="jb">$1</span>');
+  }
+
+  function copyActive() {
+    if (activeIdx === null) return;
+    const { meta, body } = events[activeIdx];
+    let text;
+    if (activeTab === 'body')         text = JSON.stringify(body, null, 2);
+    else if (activeTab === 'headers') text = JSON.stringify(meta.headers, null, 2);
+    else                              text = JSON.stringify({ meta, body }, null, 2);
+    navigator.clipboard.writeText(text).catch(() => {});
+  }
+</script>
+</body>
+</html>
