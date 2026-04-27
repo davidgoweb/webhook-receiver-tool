@@ -21,18 +21,75 @@ viewers watching the exact matching path. There is no cross-path leakage.
 
 ### Docker (recommended)
 
-```bash
-# Build
-docker build -t webhook-tool .
+#### Using pre-built image (GHCR)
 
+```bash
 # Run with defaults
-docker run -p 3088:3088 webhook-tool
+docker run -p 3088:3088 ghcr.io/davidgoweb/webhook-receiver-tool:latest
 
 # Run with custom limits
 docker run -p 3088:3088 \
   -e RATE_LIMIT_MAX=50 \
   -e MAX_VIEWERS_PER_PATH=10 \
-  webhook-tool
+  ghcr.io/davidgoweb/webhook-receiver-tool:latest
+```
+
+#### Docker Compose
+
+Create `docker-compose.yml`:
+
+```yaml
+services:
+  webhook-receiver:
+    image: ghcr.io/davidgoweb/webhook-receiver-tool:latest
+    container_name: webhook-receiver
+    ports:
+      - "3088:3088"
+    environment:
+      # Rate limiting
+      RATE_LIMIT_MAX: 100
+      RATE_LIMIT_WINDOW: "1 minute"
+
+      # Connection limits
+      MAX_VIEWERS_PER_PATH: 50
+      IDLE_TIMEOUT_MS: 18000000
+      QUEUE_SIZE_LIMIT: 500
+
+      # Request limits
+      BODY_LIMIT_BYTES: 65536
+
+      # Optional: Base URL for reverse proxy
+      # BASE_URL: "/webhook-tool"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3088/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+```
+
+Then run:
+
+```bash
+# Start
+docker compose up -d
+
+# View logs
+docker compose logs -f
+
+# Stop
+docker compose down
+```
+
+#### Build from source
+
+```bash
+# Build
+docker build -t webhook-tool .
+
+# Run
+docker run -p 3088:3088 webhook-tool
 ```
 
 ### Node.js (local)
