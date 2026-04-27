@@ -1,5 +1,8 @@
 FROM node:20-alpine
 
+# Install wget for healthcheck
+RUN apk add --no-cache wget
+
 # Run as non-root for least-privilege operation
 RUN addgroup -S webhook && adduser -S webhook -G webhook
 
